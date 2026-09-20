@@ -6,6 +6,7 @@ Homebrew tap for lakakala's tools.
 
 ```
 brew tap lakakala/tap
+brew trust lakakala/tap   # newer Homebrew requires trusting third-party taps
 brew install thther
 ```
 
