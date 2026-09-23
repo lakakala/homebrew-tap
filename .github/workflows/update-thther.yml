@@ -1,0 +1,73 @@
+name: Update thther
+
+on:
+  repository_dispatch:
+    types: [thther-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published stable release tag, e.g. v0.1.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-thther
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      # This action checks out the repository and registers it as a local tap.
+      - name: Set up Homebrew and tap
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+        with:
+          stable: true
+          token: ${{ github.token }}
+
+      - name: Verify release and publish formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for attempt in 1 2 3; do
+            # Regenerate from the latest branch after a concurrent push.
+            git fetch origin "$DEFAULT_BRANCH"
+            git checkout -B thther-update FETCH_HEAD
+            python3 -m unittest discover -s tests -v
+            python3 scripts/update_thther.py --tag "$TAG"
+            if git diff --quiet -- Formula/thther.rb; then
+              echo "No formula update required for $TAG." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            brew style Formula/thther.rb
+            if brew list --versions lakakala/tap/thther >/dev/null 2>&1; then
+              brew reinstall lakakala/tap/thther
+            else
+              brew install lakakala/tap/thther
+            fi
+            brew test lakakala/tap/thther
+
+            git add -- Formula/thther.rb
+            git commit -m "Bump thther to ${TAG#v}"
+            if git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"; then
+              echo "Updated thther to $TAG on $DEFAULT_BRANCH." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Push failed on attempt $attempt; will retry from the remote branch."
+          done
+          echo "::error::Could not publish the formula after three attempts."
+          exit 1
